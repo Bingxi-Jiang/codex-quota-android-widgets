@@ -46,7 +46,7 @@ See the [implementation notes and phone verification checklist](docs/widget-reli
 
 ## Install and use
 
-Use a test APK supplied with this fork, or build it using the steps below. The upstream project's release APK does **not** include these changes.
+Download `codex-quota-widget-fix-2.apk` from [this fork's test release](https://github.com/Bingxi-Jiang/codex-quota-android-widgets/releases/tag/widget-fix.2), or build it using the steps below. The release also includes `SHA256SUMS.txt` for verifying the download. Access to this private repository requires a GitHub account with permission to view it. The upstream project's release APK does **not** include these changes.
 
 The current debug build is **Codex Quota Test**, version **1.2.0-widget-fix.2** (version code 21), package `com.codex.quota.debug`. It installs alongside the upstream app. Accounts and widget configuration are separate between the two apps. Updating an existing test installation requires an APK signed with the same debug key.
 
