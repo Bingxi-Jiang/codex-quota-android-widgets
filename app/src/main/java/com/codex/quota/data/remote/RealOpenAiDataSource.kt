@@ -28,12 +28,12 @@ class RealOpenAiDataSource(
             if (isExpired) {
                 val usage = CodexUsage(
                     accountId = account.id,
-                    remainingPercent = 0.0,
-                    usedPercent = 100.0,
+                    remainingPercent = null,
+                    usedPercent = null,
                     usedTokens = null,
                     totalLimitTokens = null,
                     remainingCredits = null,
-                    resetAtEpochMs = decoded.expiresAtEpochMs,
+                    resetAtEpochMs = null,
                     status = AuthStatus.AUTHENTICATION_REQUIRED,
                     fetchedAtEpochMs = now,
                     rateLimitInfo = null,
@@ -52,7 +52,13 @@ class RealOpenAiDataSource(
                     api.fetchChatGptSubscriberUsage(apiKey, chatgptAccountId)
                 }
                 val accountCheckRequest = async {
-                    api.fetchChatGptAccountCheck(apiKey, chatgptAccountId)
+                    try {
+                        api.fetchChatGptAccountCheck(apiKey, chatgptAccountId)
+                    } catch (exception: CancellationException) {
+                        throw exception
+                    } catch (exception: Exception) {
+                        ApiResponse.NetworkError(exception)
+                    }
                 }
                 val resetCreditsRequest = async {
                     try {
@@ -90,13 +96,22 @@ class RealOpenAiDataSource(
                     val weeklyWindow = classifiedWindows.weekly
                     val fiveHourWindow = classifiedWindows.fiveHour
 
+                    // A successful HTTP response is not necessarily a quota reading.
+                    // Never replace the last reading with an empty or malformed payload.
+                    val windowValues = listOfNotNull(weeklyWindow, fiveHourWindow).mapNotNull { it.usedPercent }
+                    if (windowValues.isEmpty() || windowValues.any { !it.isFinite() || it !in 0.0..100.0 }) {
+                        return Result.success(CodexUsage.empty(account.id, AuthStatus.TEMPORARY_ERROR).copy(
+                            errorMessage = "Quota data is unavailable. Showing the last successful reading."
+                        ))
+                    }
+
                     val usedPercent = weeklyWindow?.usedPercent
                     val remainingPercent = usedPercent?.let { (100.0 - it).coerceIn(0.0, 100.0) }
-                    val resetAtEpochMs = weeklyWindow?.resetAt?.let { it * 1000L }
+                    val resetAtEpochMs = weeklyWindow.resetEpochMs(now)
 
                     val fiveHourUsedPercent = fiveHourWindow?.usedPercent
                     val fiveHourRemainingPercent = fiveHourUsedPercent?.let { (100.0 - it).coerceIn(0.0, 100.0) }
-                    val fiveHourResetAtEpochMs = fiveHourWindow?.resetAt?.let { it * 1000L }
+                    val fiveHourResetAtEpochMs = fiveHourWindow.resetEpochMs(now)
 
                     val isLimitReached = rateLimit?.limitReached == true || listOfNotNull(weeklyWindow, fiveHourWindow)
                         .any { window -> window.usedPercent?.let { it >= 100.0 } == true }
@@ -169,8 +184,8 @@ class RealOpenAiDataSource(
                     if (whamResponse.httpCode == 401) {
                         val usage = CodexUsage(
                             accountId = account.id,
-                            remainingPercent = 0.0,
-                            usedPercent = 100.0,
+                            remainingPercent = null,
+                            usedPercent = null,
                             usedTokens = null,
                             totalLimitTokens = null,
                             remainingCredits = null,
@@ -189,16 +204,16 @@ class RealOpenAiDataSource(
                         return Result.success(usage)
                     }
 
-                    // Fallback to active subscription window if transient HTTP error
+                    // HTTP failures do not tell us how much quota remains.
                     val usage = CodexUsage(
                         accountId = account.id,
-                        remainingPercent = 100.0,
-                        usedPercent = 0.0,
+                        remainingPercent = null,
+                        usedPercent = null,
                         usedTokens = null,
                         totalLimitTokens = null,
                         remainingCredits = null,
-                        resetAtEpochMs = decoded.expiresAtEpochMs,
-                        status = AuthStatus.AUTHENTICATED,
+                        resetAtEpochMs = null,
+                        status = AuthStatus.TEMPORARY_ERROR,
                         fetchedAtEpochMs = now,
                         rateLimitInfo = null,
                         errorMessage = whamResponse.message,
@@ -252,7 +267,6 @@ class RealOpenAiDataSource(
 
                 val remainingPercent: Double? = rateLimitInfo.tokenRemainingPercent
                     ?: rateLimitInfo.requestRemainingPercent
-                    ?: 100.0
 
                 val usedPercent: Double? = remainingPercent?.let { (100.0 - it).coerceIn(0.0, 100.0) }
 
@@ -366,6 +380,11 @@ class RealOpenAiDataSource(
             weekly = weeklyWindow
         )
     }
+
+    private fun ChatGptWindowDto?.resetEpochMs(now: Long): Long? =
+        this?.resetAt?.takeIf { it > 0L && it <= Long.MAX_VALUE / 1000L }?.let { it * 1000L }
+            ?: this?.resetAfterSeconds?.takeIf { it >= 0L && it <= (Long.MAX_VALUE - now) / 1000L }
+                ?.let { now + it * 1000L }
 
     private fun windowKind(limitWindowSeconds: Long?): SubscriberWindowKind {
         if (limitWindowSeconds == null) return SubscriberWindowKind.UNKNOWN

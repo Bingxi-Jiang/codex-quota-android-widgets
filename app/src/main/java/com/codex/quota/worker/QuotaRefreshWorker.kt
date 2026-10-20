@@ -109,10 +109,13 @@ class QuotaRefreshWorker(
         // Update home-screen widgets
         WidgetUpdateHelper.updateAllWidgets(applicationContext)
 
-        return if (refreshResult.isSuccess) {
+        val needsRetry = currentAccounts.any {
+            it.account.authStatus == AuthStatus.OFFLINE || it.account.authStatus == AuthStatus.TEMPORARY_ERROR
+        }
+        return if (refreshResult.isSuccess && !needsRetry) {
             Result.success()
         } else {
-            Result.retry()
+            if (runAttemptCount < 3) Result.retry() else Result.failure()
         }
     }
 

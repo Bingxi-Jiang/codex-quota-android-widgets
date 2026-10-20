@@ -49,7 +49,7 @@ class DataStoreManager(private val context: Context) {
         val widgetThemeStr = prefs[PreferencesKeys.WIDGET_THEME_MODE] ?: WidgetThemeMode.DARK_OBSIDIAN.name
         val widgetThemeMode = WidgetThemeMode.fromString(widgetThemeStr)
 
-        val refreshIntervalMinutes = prefs[PreferencesKeys.REFRESH_INTERVAL] ?: 30L
+        val refreshIntervalMinutes = prefs[PreferencesKeys.REFRESH_INTERVAL] ?: 15L
 
         val thresholdStrings = prefs[PreferencesKeys.QUOTA_ALERT_THRESHOLDS] ?: setOf("5", "10", "25")
         val thresholds = thresholdStrings.mapNotNull { it.toIntOrNull() }.toSet().ifEmpty { setOf(5, 10, 25) }

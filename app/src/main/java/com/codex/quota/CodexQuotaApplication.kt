@@ -13,6 +13,11 @@ import com.codex.quota.domain.repository.UserPreferencesRepository
 import com.codex.quota.security.EncryptedCredentialStore
 import com.codex.quota.security.KeystoreManager
 import com.codex.quota.worker.WorkScheduler
+import com.codex.quota.widget.WidgetUpdateHelper
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,6 +44,7 @@ class CodexQuotaApplication : Application() {
     lateinit var preferencesRepository: UserPreferencesRepository
         private set
 
+    @OptIn(FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
 
@@ -61,7 +67,20 @@ class CodexQuotaApplication : Application() {
         // Schedule periodic background refresh
         applicationScope.launch {
             val prefs = preferencesRepository.getPreferences()
-            WorkScheduler.schedulePeriodicRefresh(this@CodexQuotaApplication, prefs.refreshInterval.minutes)
+            if (prefs.backgroundSyncEnabled) {
+                WorkScheduler.schedulePeriodicRefresh(this@CodexQuotaApplication, prefs.refreshInterval.minutes)
+            } else {
+                WorkScheduler.cancelPeriodicRefresh(this@CodexQuotaApplication)
+            }
+        }
+
+        // App/manual refresh, account edits/removals and theme changes also repaint widgets.
+        applicationScope.launch {
+            combine(repository.observeAccounts(), preferencesRepository.observePreferences()) { accounts, prefs ->
+                accounts to prefs.widgetThemeMode
+            }.debounce(250).collect {
+                WidgetUpdateHelper.updateAllWidgets(this@CodexQuotaApplication)
+            }
         }
     }
 

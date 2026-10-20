@@ -26,7 +26,7 @@ enum class RefreshIntervalMinutes(val minutes: Long, val label: String) {
 
     companion object {
         fun fromMinutes(minutes: Long): RefreshIntervalMinutes {
-            return entries.find { it.minutes == minutes } ?: MINUTES_30
+            return entries.find { it.minutes == minutes } ?: MINUTES_15
         }
     }
 }
@@ -36,7 +36,7 @@ data class UserPreferences(
     val dynamicColor: Boolean = true,
     val widgetThemeMode: WidgetThemeMode = WidgetThemeMode.DARK_OBSIDIAN,
     val backgroundSyncEnabled: Boolean = true,
-    val refreshInterval: RefreshIntervalMinutes = RefreshIntervalMinutes.MINUTES_30,
+    val refreshInterval: RefreshIntervalMinutes = RefreshIntervalMinutes.MINUTES_15,
     val refreshOnAppOpen: Boolean = true,
     val signedOutNotificationsEnabled: Boolean = true,
     val quotaAlertsEnabled: Boolean = true,

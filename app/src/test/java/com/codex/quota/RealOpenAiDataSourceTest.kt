@@ -18,6 +18,8 @@ import com.codex.quota.domain.model.AuthStatus
 import com.codex.quota.domain.model.CodexAccount
 import com.codex.quota.domain.model.PlanType
 import io.mockk.every
+import io.mockk.coEvery
+import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
 import kotlinx.coroutines.CompletableDeferred
@@ -36,6 +38,97 @@ import java.time.Instant
 @OptIn(ExperimentalCoroutinesApi::class)
 class RealOpenAiDataSourceTest {
     private val ignoreUnknownKeysJson = Json { ignoreUnknownKeys = true }
+
+    @Test
+    fun transientSubscriberHttpErrors_doNotInventFullQuotaOrTokenReset() = runTest {
+        for (code in listOf(403, 429, 500, 503)) {
+            val usage = fetchResponse(ApiResponse.HttpError(code, "temporary failure", null))
+            assertEquals(AuthStatus.TEMPORARY_ERROR, usage.status)
+            assertEquals(null, usage.remainingPercent)
+            assertEquals(null, usage.usedPercent)
+            assertEquals(null, usage.resetAtEpochMs)
+        }
+    }
+
+    @Test
+    fun unauthorizedSubscriber_doesNotInventZeroQuota() = runTest {
+        val usage = fetchResponse(ApiResponse.HttpError(401, "expired", null))
+        assertEquals(AuthStatus.AUTHENTICATION_REQUIRED, usage.status)
+        assertEquals(null, usage.remainingPercent)
+        assertEquals(null, usage.usedPercent)
+    }
+
+    @Test
+    fun emptyOrMalformedQuotaPayload_isNotASuccessfulReading() = runTest {
+        for (value in listOf(null, -1.0, 101.0, Double.NaN, Double.POSITIVE_INFINITY)) {
+            val usage = fetchSubscriberUsage(
+                primaryWindow = ChatGptWindowDto(usedPercent = value, limitWindowSeconds = 18_000L),
+                secondaryWindow = null
+            )
+            assertEquals(AuthStatus.TEMPORARY_ERROR, usage.status)
+            assertEquals(null, usage.remainingPercent)
+            assertEquals(null, usage.fiveHourRemainingPercent)
+        }
+    }
+
+    @Test
+    fun networkFailure_reportsOfflineWithoutInventingQuota() = runTest {
+        val usage = fetchResponse(ApiResponse.NetworkError(IOException("offline")))
+        assertEquals(AuthStatus.OFFLINE, usage.status)
+        assertEquals(null, usage.remainingPercent)
+        assertEquals(null, usage.fiveHourRemainingPercent)
+    }
+
+    @Test
+    fun resetAfterSeconds_isUsedWhenAbsoluteResetIsMissing() = runTest {
+        val before = System.currentTimeMillis()
+        val usage = fetchSubscriberUsage(
+            primaryWindow = ChatGptWindowDto(usedPercent = 25.0, limitWindowSeconds = 18_000L, resetAfterSeconds = 600L),
+            secondaryWindow = null
+        )
+        assertEquals(75.0, usage.fiveHourRemainingPercent!!, 0.0)
+        assertTrue(usage.fiveHourResetAtEpochMs!! >= before + 600_000L)
+        assertTrue(usage.fiveHourResetAtEpochMs!! <= System.currentTimeMillis() + 600_000L)
+    }
+
+    @Test
+    fun optionalAccountDetailsException_doesNotDiscardValidQuota() = runTest {
+        val dto = ChatGptWhamUsageDto(rateLimit = ChatGptRateLimitDto(
+            primaryWindow = ChatGptWindowDto(usedPercent = 25.0, limitWindowSeconds = 18_000L)
+        ))
+        val usage = fetchResponse(ApiResponse.Success(dto, emptyLimits(), 200), checkThrows = true)
+        assertEquals(AuthStatus.AUTHENTICATED, usage.status)
+        assertEquals(75.0, usage.fiveHourRemainingPercent!!, 0.0)
+    }
+
+    @Test
+    fun apiSuccessWithoutRateLimitHeaders_doesNotClaimFullQuota() = runTest {
+        mockkObject(JwtTokenParser)
+        every { JwtTokenParser.parseToken(any()) } returns null
+        try {
+            val api = mockk<OpenAiUsageService>()
+            coEvery { api.checkAuthenticationAndFetchRateLimits(any(), any()) } returns
+                ApiResponse.Success(OpenAiModelsResponseDto(), emptyLimits(), 200)
+            val usage = RealOpenAiDataSource(api).fetchUsage(account(), "sk-test").getOrThrow()
+            assertEquals(null, usage.remainingPercent)
+        } finally {
+            unmockkObject(JwtTokenParser)
+        }
+    }
+
+    private suspend fun fetchResponse(response: ApiResponse<ChatGptWhamUsageDto>, checkThrows: Boolean = false) = withSubscriberToken {
+        val api = mockk<OpenAiUsageService>()
+        coEvery { api.fetchChatGptSubscriberUsage(any(), any()) } returns response
+        if (checkThrows) {
+            coEvery { api.fetchChatGptAccountCheck(any(), any()) } throws IOException("optional details unavailable")
+        } else {
+            coEvery { api.fetchChatGptAccountCheck(any(), any()) } returns ApiResponse.HttpError(503, "unavailable", null)
+        }
+        coEvery { api.fetchChatGptResetCredits(any(), any()) } returns ApiResponse.HttpError(503, "unavailable", null)
+        RealOpenAiDataSource(api).fetchUsage(account(), "subscriber.jwt.token").getOrThrow()
+    }
+
+    private fun emptyLimits() = ParsedRateLimits(null, null, null, null, null, null, null, null)
 
     @Test
     fun subscriberRequests_runConcurrentlyAndPreserveApiMetadataFallbacks() = runTest {
@@ -348,9 +441,13 @@ class RealOpenAiDataSourceTest {
                     rateLimits = emptyRateLimits(),
                     httpCode = 200
                 )
-            } ?: if (bankedResets != null) {
+            } ?: run {
                 ApiResponse.Success(
                     data = ChatGptWhamUsageDto(
+                        rateLimit = ChatGptRateLimitDto(
+                            primaryWindow = ChatGptWindowDto(usedPercent = 25.0, limitWindowSeconds = 18_000L),
+                            secondaryWindow = ChatGptWindowDto(usedPercent = 40.0, limitWindowSeconds = 604_800L)
+                        ),
                         rateLimitResetCredits = ChatGptRateLimitResetCreditsDto(
                             availableCount = bankedResets
                         )
@@ -358,8 +455,6 @@ class RealOpenAiDataSourceTest {
                     rateLimits = emptyRateLimits(),
                     httpCode = 200
                 )
-            } else {
-                ApiResponse.HttpError(503, "temporary outage", null)
             }
         }
 

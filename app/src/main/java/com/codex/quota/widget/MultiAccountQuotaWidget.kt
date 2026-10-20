@@ -4,9 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.datastore.preferences.core.Preferences
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.GlanceTheme
@@ -19,11 +22,13 @@ import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
+import androidx.glance.currentState
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Column
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
+import androidx.glance.layout.fillMaxHeight
 import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
@@ -36,170 +41,156 @@ import androidx.glance.unit.ColorProvider
 import com.codex.quota.CodexQuotaApplication
 import com.codex.quota.domain.model.AccountWithUsage
 import com.codex.quota.domain.model.AuthStatus
+import com.codex.quota.domain.model.UserPreferences
 import com.codex.quota.domain.model.WidgetThemeMode
 import com.codex.quota.ui.MainActivity
-import com.codex.quota.ui.util.formatQuotaPercent
-import com.codex.quota.ui.util.primarySubscriberQuotaWindow
+import kotlinx.coroutines.flow.flowOf
 
 class MultiAccountQuotaWidget : GlanceAppWidget() {
-
     override val sizeMode: SizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as? CodexQuotaApplication
-        val accounts = app?.repository?.getAllAccounts().orEmpty().take(5)
-        val prefs = try {
-            app?.preferencesRepository?.getPreferences()
-        } catch (e: Exception) {
-            null
-        }
-        val themeMode = prefs?.widgetThemeMode ?: WidgetThemeMode.DARK_OBSIDIAN
-
+        val accounts = app?.repository?.getAllAccounts().orEmpty()
+        val accountsFlow = app?.repository?.observeAccounts() ?: flowOf(emptyList())
+        val prefs = app?.preferencesRepository?.getPreferences() ?: UserPreferences()
+        val prefsFlow = app?.preferencesRepository?.observePreferences() ?: flowOf(prefs)
         provideContent {
+            val liveAccounts by accountsFlow.collectAsState(initial = accounts)
+            val livePrefs by prefsFlow.collectAsState(initial = prefs)
             GlanceTheme {
-                MultiWidgetContent(context, accounts, themeMode)
+                DualQuotaWidgetContent(context, liveAccounts, currentState<Preferences>(), livePrefs.widgetThemeMode)
             }
         }
     }
+}
 
-    @Composable
-    private fun MultiWidgetContent(
-        context: Context,
-        accounts: List<AccountWithUsage>,
-        themeMode: WidgetThemeMode
+/** The same two accounts become horizontal rows at 4x1 and adjacent dial panels at 4x2. */
+@Composable
+internal fun DualQuotaWidgetContent(
+    context: Context,
+    accounts: List<AccountWithUsage>,
+    preferences: Preferences,
+    themeMode: WidgetThemeMode,
+    now: Long = System.currentTimeMillis()
+) {
+    val colors = WidgetThemeHelper.getColors(themeMode)
+    val slots = dualWidgetAccounts(accounts, preferences)
+    val size = LocalSize.current
+    val compact = size.height < 108.dp
+    Box(
+        modifier = GlanceModifier.fillMaxSize().background(colors.background).cornerRadius(18.dp)
+            .padding(horizontal = 8.dp, vertical = if (compact) 3.dp else 8.dp)
     ) {
-        val colors = WidgetThemeHelper.getColors(themeMode)
-        val mainIntent = Intent(Intent.ACTION_VIEW, Uri.parse("codexquota://dashboard"), context, MainActivity::class.java)
-
-        Box(
-            modifier = GlanceModifier
-                .fillMaxSize()
-                .background(colors.background)
-                .cornerRadius(20.dp)
-                .padding(12.dp)
-        ) {
-            if (accounts.isEmpty()) {
-                Column(
-                    modifier = GlanceModifier.fillMaxSize().clickable(actionStartActivity(mainIntent)),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Codex Quotas",
-                        style = TextStyle(color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    )
-                    Spacer(modifier = GlanceModifier.height(4.dp))
-                    Text(
-                        text = "Tap to add accounts",
-                        style = TextStyle(color = colors.accentBlue, fontSize = 12.sp)
-                    )
-                }
-            } else {
-                Column(modifier = GlanceModifier.fillMaxSize()) {
-                    Row(
-                        modifier = GlanceModifier
-                            .fillMaxWidth()
-                            .clickable(actionStartActivity(mainIntent)),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Codex Quotas",
-                            style = TextStyle(color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        )
-                        Spacer(modifier = GlanceModifier.defaultWeight())
-                        Text(
-                            text = "${accounts.size} Active",
-                            style = TextStyle(color = colors.accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        )
-                    }
-
-                    Spacer(modifier = GlanceModifier.height(6.dp))
-
-                    for (item in accounts) {
-                        AccountRow(context, item, colors)
-                        Spacer(modifier = GlanceModifier.height(4.dp))
+        if (compact) {
+            Column(modifier = GlanceModifier.fillMaxSize()) {
+                for ((index, slot) in slots.withIndex()) {
+                    CompactAccountRow(context, slot, colors, now, GlanceModifier.defaultWeight())
+                    if (index == 0) {
+                        Box(GlanceModifier.fillMaxWidth().height(1.dp).background(colors.progressTrack)) {}
                     }
                 }
             }
-        }
-    }
-
-    @Composable
-    private fun AccountRow(
-        context: Context,
-        item: AccountWithUsage,
-        colors: WidgetColors
-    ) {
-        val detailIntent = Intent(
-            Intent.ACTION_VIEW,
-            Uri.parse("codexquota://account/${item.account.id}"),
-            context,
-            MainActivity::class.java
-        )
-
-        val primaryWindow = item.usage.primarySubscriberQuotaWindow()
-        val remainingPercent = primaryWindow?.remainingPercent?.toInt() ?: item.usage?.remainingPercent?.toInt()
-        val isSignedOut = item.usage?.status == AuthStatus.AUTHENTICATION_REQUIRED ||
-                item.account.authStatus == AuthStatus.AUTHENTICATION_REQUIRED
-        val quotaText = if (item.usage?.fiveHourRemainingPercent != null && primaryWindow?.label == "Weekly") {
-            "W ${formatQuotaPercent(primaryWindow.remainingPercent)} • 5h ${formatQuotaPercent(item.usage.fiveHourRemainingPercent)}"
-        } else if (primaryWindow != null) {
-            "${primaryWindow.label} ${formatQuotaPercent(primaryWindow.remainingPercent)}"
-        } else if (remainingPercent != null) {
-            "$remainingPercent%"
         } else {
-            "--%"
-        }
-
-        val dotColor = try {
-            Color(android.graphics.Color.parseColor(item.account.colorHex))
-        } catch (e: Exception) {
-            Color(0xFF10B981)
-        }
-
-        Row(
-            modifier = GlanceModifier
-                .fillMaxWidth()
-                .background(colors.surface)
-                .cornerRadius(10.dp)
-                .padding(horizontal = 10.dp, vertical = 6.dp)
-                .clickable(actionStartActivity(detailIntent)),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = GlanceModifier
-                    .width(6.dp)
-                    .height(6.dp)
-                    .background(dotColor)
-                    .cornerRadius(3.dp)
-            ) {}
-
-            Spacer(modifier = GlanceModifier.width(6.dp))
-
-            Text(
-                text = item.account.nickname,
-                maxLines = 1,
-                modifier = GlanceModifier.defaultWeight(),
-                style = TextStyle(color = colors.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-            )
-
-            if (isSignedOut) {
-                Text(
-                    text = "Sign In",
-                    style = TextStyle(color = colors.error, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                )
-            } else {
-                Text(
-                    text = quotaText,
-                    style = TextStyle(
-                        color = if ((remainingPercent ?: 100) > 20) colors.accent else ColorProvider(Color(0xFFF59E0B)),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                )
+            val reservedHeight = if (size.height < 128.dp) 78f else 90f
+            val diameter = minOf(size.height.value - reservedHeight, (size.width.value - 52f) / 4f).coerceIn(32f, 60f)
+            Row(modifier = GlanceModifier.fillMaxSize()) {
+                DialAccountPanel(context, slots[0], colors, diameter, now, GlanceModifier.defaultWeight())
+                Box(GlanceModifier.fillMaxHeight().width(1.dp).background(colors.progressTrack)) {}
+                DialAccountPanel(context, slots[1], colors, diameter, now, GlanceModifier.defaultWeight())
             }
         }
     }
+}
+
+private fun accountIntent(context: Context, slot: DualWidgetAccount) =
+    Intent(Intent.ACTION_VIEW, Uri.parse(slot.data?.let { "codexquota://account/${it.account.id}" }
+        ?: "codexquota://dashboard"), context, MainActivity::class.java)
+
+@Composable
+private fun CompactAccountRow(
+    context: Context, slot: DualWidgetAccount, colors: WidgetColors, now: Long, modifier: GlanceModifier
+) {
+    val usage = slot.data?.usage
+    val syncState = compactSyncState(slot.data)
+    val width = LocalSize.current.width.value
+    val metricWidth = ((width - 104f) / 2f).coerceIn(66f, 110f).dp
+    val metricFont = if (width < 300f) 9.sp else 10.sp
+    Row(
+        modifier = modifier.fillMaxWidth().clickable(actionStartActivity(accountIntent(context, slot))),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AccountDot(slot, colors)
+        Spacer(GlanceModifier.width(5.dp))
+        Text(slot.label, modifier = GlanceModifier.defaultWeight(), maxLines = 1,
+            style = TextStyle(color = colors.textPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold))
+        Spacer(GlanceModifier.width(4.dp))
+        Text(compactQuotaLabel("W", usage?.remainingPercent, usage?.resetAtEpochMs, now),
+            modifier = GlanceModifier.width(metricWidth), maxLines = 1,
+            style = TextStyle(color = colors.accent, fontSize = metricFont, fontWeight = FontWeight.Medium))
+        Spacer(GlanceModifier.width(4.dp))
+        Text(compactQuotaLabel("5h", usage?.fiveHourRemainingPercent, usage?.fiveHourResetAtEpochMs, now),
+            modifier = GlanceModifier.width(metricWidth), maxLines = 1,
+            style = TextStyle(color = colors.accentBlue, fontSize = metricFont, fontWeight = FontWeight.Medium))
+        if (syncState != null) {
+            Text(syncState, style = TextStyle(color = colors.error, fontSize = 9.sp), maxLines = 1)
+        }
+        WidgetRefreshButton(colors, compact = true)
+    }
+}
+
+@Composable
+private fun DialAccountPanel(
+    context: Context, slot: DualWidgetAccount, colors: WidgetColors,
+    diameter: Float, now: Long, modifier: GlanceModifier
+) {
+    val usage = slot.data?.usage
+    val gap = if (LocalSize.current.height < 144.dp) 2.dp else 4.dp
+    val inlineSync = LocalSize.current.height < 128.dp
+    val syncLabel = slot.data?.widgetSyncLabel(now) ?: "Tap to add account"
+    Column(
+        modifier = modifier.fillMaxHeight().padding(horizontal = 6.dp)
+            .clickable(actionStartActivity(accountIntent(context, slot))),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            AccountDot(slot, colors)
+            Spacer(GlanceModifier.width(5.dp))
+            Text(slot.label, modifier = GlanceModifier.defaultWeight(), maxLines = 1,
+                style = TextStyle(color = colors.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold))
+            if (inlineSync) {
+                Text(compactSyncState(slot.data).orEmpty() + syncLabel.substringAfter(" · ", "—"),
+                    maxLines = 1, style = TextStyle(color = colors.textSecondary, fontSize = 8.sp))
+            }
+            WidgetRefreshButton(colors, compact = true)
+        }
+        Spacer(GlanceModifier.height(gap))
+        Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            QuotaDial("Weekly", usage?.remainingPercent, usage?.resetAtEpochMs, diameter, colors.accent,
+                colors, now, GlanceModifier.defaultWeight())
+            Spacer(GlanceModifier.width(4.dp))
+            QuotaDial("5-hour", usage?.fiveHourRemainingPercent, usage?.fiveHourResetAtEpochMs, diameter,
+                colors.accentBlue, colors, now, GlanceModifier.defaultWeight())
+        }
+        if (!inlineSync) {
+            Spacer(GlanceModifier.height(gap))
+            Text(syncLabel, maxLines = 1, style = TextStyle(color = colors.textSecondary, fontSize = 9.sp))
+        }
+    }
+}
+
+@Composable
+private fun AccountDot(slot: DualWidgetAccount, colors: WidgetColors) {
+    val color = slot.data?.account?.colorHex?.let {
+        runCatching { ColorProvider(Color(android.graphics.Color.parseColor(it))) }.getOrNull()
+    } ?: colors.textMuted
+    Box(GlanceModifier.width(5.dp).height(5.dp).background(color).cornerRadius(3.dp)) {}
+}
+
+private fun compactSyncState(data: AccountWithUsage?): String? = when (data?.usage?.status ?: data?.account?.authStatus) {
+    AuthStatus.AUTHENTICATION_REQUIRED -> "!"
+    AuthStatus.OFFLINE, AuthStatus.TEMPORARY_ERROR -> "~"
+    else -> if (data?.usage?.isStale == true) "~" else null
 }
 
 class MultiAccountQuotaWidgetReceiver : GlanceAppWidgetReceiver() {

@@ -4,6 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import kotlin.math.roundToInt
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.datastore.preferences.core.Preferences
+import androidx.glance.currentState
+import kotlinx.coroutines.flow.flowOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,7 +47,7 @@ import com.codex.quota.ui.MainActivity
 import com.codex.quota.ui.util.formatQuotaPercent
 import com.codex.quota.ui.util.formatResetCountdown
 import com.codex.quota.ui.util.primarySubscriberQuotaWindow
-import kotlinx.coroutines.runBlocking
+import androidx.glance.appwidget.LinearProgressIndicator
 
 class MediumQuotaWidget : GlanceAppWidget() {
 
@@ -50,17 +56,22 @@ class MediumQuotaWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as? CodexQuotaApplication
         val accounts = app?.repository?.getAllAccounts().orEmpty()
-        val primaryAccount = accounts.firstOrNull()
+        val accountsFlow = app?.repository?.observeAccounts() ?: flowOf(emptyList())
+        val preferencesFlow = app?.preferencesRepository?.observePreferences()
+            ?: flowOf(com.codex.quota.domain.model.UserPreferences())
         val prefs = try {
             app?.preferencesRepository?.getPreferences()
         } catch (e: Exception) {
             null
         }
-        val themeMode = prefs?.widgetThemeMode ?: WidgetThemeMode.DARK_OBSIDIAN
 
         provideContent {
+            val liveAccounts by accountsFlow.collectAsState(initial = accounts)
+            val livePreferences by preferencesFlow.collectAsState(
+                initial = prefs ?: com.codex.quota.domain.model.UserPreferences()
+            )
             GlanceTheme {
-                MediumWidgetContent(context, primaryAccount, themeMode)
+                MediumWidgetContent(context, selectWidgetAccount(liveAccounts, currentState<Preferences>()[WIDGET_ACCOUNT_ID]), livePreferences.widgetThemeMode)
             }
         }
     }
@@ -106,10 +117,10 @@ class MediumQuotaWidget : GlanceAppWidget() {
                     )
                 }
             } else {
-                val primaryWindow = data.usage.primarySubscriberQuotaWindow()
-                val remainingPercent = primaryWindow?.remainingPercent?.toInt() ?: data.usage?.remainingPercent?.toInt()
-                val usedPercent = primaryWindow?.usedPercent?.toInt()
-                    ?: data.usage?.usedPercent?.toInt()
+                val primaryWindow = data.usage.primarySubscriberQuotaWindow(data.account.planType)
+                val remainingPercent = primaryWindow?.remainingPercent?.roundToInt() ?: data.usage?.remainingPercent?.roundToInt()
+                val usedPercent = primaryWindow?.usedPercent?.roundToInt()
+                    ?: data.usage?.usedPercent?.roundToInt()
                     ?: remainingPercent?.let { (100 - it).coerceIn(0, 100) }
                 val status = data.usage?.status ?: data.account.authStatus
                 val resetStr = primaryWindow?.resetAtEpochMs?.let { formatResetCountdown(it) }
@@ -153,28 +164,22 @@ class MediumQuotaWidget : GlanceAppWidget() {
                             )
                             Spacer(modifier = GlanceModifier.height(4.dp))
                             // Progress bar
-                            Box(
-                                modifier = GlanceModifier
-                                    .fillMaxWidth()
-                                    .height(4.dp)
-                                    .background(colors.progressTrack)
-                                    .cornerRadius(2.dp)
-                            ) {
-                                val fraction = ((remainingPercent ?: 0) / 100f).coerceIn(0f, 1f)
-                                if (fraction > 0f) {
-                                    Box(
-                                        modifier = GlanceModifier
-                                            .fillMaxWidth()
-                                            .height(4.dp)
-                                            .background(colors.accent)
-                                            .cornerRadius(2.dp)
-                                    ) {}
-                                }
-                            }
+                            Text(
+                                text = data.widgetSyncLabel(),
+                                maxLines = 1,
+                                style = TextStyle(color = colors.textMuted, fontSize = 9.sp)
+                            )
+                            LinearProgressIndicator(
+                                progress = ((primaryWindow?.remainingPercent ?: data.usage?.remainingPercent ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f),
+                                modifier = GlanceModifier.fillMaxWidth().height(4.dp),
+                                color = colors.accent,
+                                backgroundColor = colors.progressTrack
+                            )
                         }
 
                         Spacer(modifier = GlanceModifier.width(10.dp))
 
+                        WidgetRefreshButton(colors, compact = true)
                         Text(
                             text = if (remainingPercent != null) "$remainingPercent%" else "--%",
                             style = TextStyle(color = colors.accent, fontWeight = FontWeight.Bold, fontSize = 18.sp)
@@ -216,7 +221,8 @@ class MediumQuotaWidget : GlanceAppWidget() {
 
                             Spacer(modifier = GlanceModifier.width(8.dp))
 
-                            if (status == AuthStatus.AUTHENTICATION_REQUIRED) {
+                            WidgetRefreshButton(colors)
+                            if (status == AuthStatus.AUTHENTICATION_REQUIRED && remainingPercent == null) {
                                 Text(
                                     text = "Sign In",
                                     style = TextStyle(color = colors.error, fontWeight = FontWeight.Bold, fontSize = 13.sp)
@@ -231,25 +237,21 @@ class MediumQuotaWidget : GlanceAppWidget() {
 
                         Spacer(modifier = GlanceModifier.height(8.dp))
 
-                        // Progress Bar
-                        Box(
-                            modifier = GlanceModifier
-                                .fillMaxWidth()
-                                .height(6.dp)
-                                .background(colors.progressTrack)
-                                .cornerRadius(3.dp)
-                        ) {
-                            val fraction = ((remainingPercent ?: 0) / 100f).coerceIn(0f, 1f)
-                            if (fraction > 0f) {
-                                Box(
-                                    modifier = GlanceModifier
-                                        .fillMaxWidth()
-                                        .height(6.dp)
-                                        .background(colors.accent)
-                                        .cornerRadius(3.dp)
-                                ) {}
-                            }
+                        if (height <= 150.dp) {
+                            Text(
+                                text = data.widgetSyncLabel(),
+                                maxLines = 1,
+                                style = TextStyle(color = colors.textMuted, fontSize = 9.sp)
+                            )
                         }
+
+                        // Progress Bar
+                        LinearProgressIndicator(
+                            progress = ((primaryWindow?.remainingPercent ?: data.usage?.remainingPercent ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f),
+                            modifier = GlanceModifier.fillMaxWidth().height(6.dp),
+                            color = colors.accent,
+                            backgroundColor = colors.progressTrack
+                        )
 
                         Spacer(modifier = GlanceModifier.height(8.dp))
 
@@ -298,7 +300,7 @@ class MediumQuotaWidget : GlanceAppWidget() {
                                 )
                                 Spacer(modifier = GlanceModifier.defaultWeight())
                                 Text(
-                                    text = if (data.usage?.isStale == true) "Stale Cache" else "Synced",
+                                    text = data.widgetSyncLabel(),
                                     style = TextStyle(
                                         color = if (data.usage?.isStale == true) ColorProvider(Color(0xFFF59E0B)) else colors.textMuted,
                                         fontSize = 10.sp

@@ -8,5 +8,5 @@
     <string name="channel_quota_description">Alerts when an account usage crosses configured quota limits.</string>
     <string name="widget_small_name">Codex Quota (Compact)</string>
     <string name="widget_medium_name">Codex Quota (Standard)</string>
-    <string name="widget_multi_name">Codex Quota (Multi-Account)</string>
+    <string name="widget_multi_name">Codex Quota (Two Accounts · 4×1 / 4×2)</string>
 </resources>

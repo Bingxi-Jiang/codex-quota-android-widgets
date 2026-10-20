@@ -19,7 +19,7 @@ class UserPreferencesTest {
         assertTrue(prefs.dynamicColor)
         assertEquals(WidgetThemeMode.DARK_OBSIDIAN, prefs.widgetThemeMode)
         assertTrue(prefs.backgroundSyncEnabled)
-        assertEquals(RefreshIntervalMinutes.MINUTES_30, prefs.refreshInterval)
+        assertEquals(RefreshIntervalMinutes.MINUTES_15, prefs.refreshInterval)
         assertTrue(prefs.refreshOnAppOpen)
         assertTrue(prefs.signedOutNotificationsEnabled)
         assertTrue(prefs.quotaAlertsEnabled)

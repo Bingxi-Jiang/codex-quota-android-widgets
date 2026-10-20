@@ -42,7 +42,7 @@ android {
         applicationId = "com.codex.quota"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
+        versionCode = 21
         versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -52,6 +52,9 @@ android {
     }
 
     signingConfigs {
+        System.getenv("ANDROID_USER_HOME")?.let { androidUserHome ->
+            getByName("debug").storeFile = File(androidUserHome, "debug.keystore")
+        }
         if (releaseSigningConfigured) {
             create("release") {
                 storeFile = releaseStoreFile
@@ -77,6 +80,8 @@ android {
         debug {
             isMinifyEnabled = false
             applicationIdSuffix = ".debug"
+            versionNameSuffix = "-widget-fix.2"
+            resValue("string", "app_name", "Codex Quota Test")
         }
     }
 
@@ -92,6 +97,18 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            it.maxHeapSize = "1536m"
+            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            val testHome = gradle.gradleUserHomeDir.resolve("test-home")
+            it.systemProperty("user.home", testHome.absolutePath)
+            it.doFirst { testHome.mkdirs() }
+            System.getenv("TEMP")?.let { temp -> it.systemProperty("java.io.tmpdir", temp) }
+        }
     }
 
     packaging {
@@ -182,6 +199,7 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
     testImplementation(libs.mockk)
+    testImplementation(libs.robolectric)
 
     // Android Testing
     androidTestImplementation(libs.androidx.junit)

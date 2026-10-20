@@ -26,11 +26,19 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.datastore.preferences.core.Preferences
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import androidx.glance.appwidget.GlanceAppWidgetManager
+import androidx.glance.appwidget.state.updateAppWidgetState
+import androidx.glance.appwidget.state.getAppWidgetState
+import androidx.glance.state.PreferencesGlanceStateDefinition
+import com.codex.quota.worker.WorkScheduler
 import com.codex.quota.CodexQuotaApplication
 import com.codex.quota.domain.model.AccountWithUsage
 import com.codex.quota.ui.theme.CodexQuotaTheme
@@ -57,10 +65,28 @@ class WidgetConfigActivity : ComponentActivity() {
 
         val app = application as CodexQuotaApplication
         val repository = app.repository
+        val isDualWidget = AppWidgetManager.getInstance(this).getAppWidgetInfo(appWidgetId)
+            ?.provider?.className == MultiAccountQuotaWidgetReceiver::class.java.name
+        var widgetPreferences by mutableStateOf<Preferences?>(null)
+        if (isDualWidget) {
+            lifecycleScope.launch {
+                val glanceId = GlanceAppWidgetManager(applicationContext).getGlanceIdBy(appWidgetId)
+                widgetPreferences = getAppWidgetState(applicationContext, PreferencesGlanceStateDefinition, glanceId)
+            }
+        }
 
         setContent {
             CodexQuotaTheme {
                 val accounts by repository.observeAccounts().collectAsState(initial = emptyList())
+                if (isDualWidget) {
+                    val loaded = widgetPreferences
+                    if (loaded == null) {
+                        Text("Loading widget settings…", modifier = Modifier.padding(24.dp))
+                    } else {
+                        DualWidgetConfiguration(accounts, loaded, ::confirmDualWidgetConfig)
+                    }
+                    return@CodexQuotaTheme
+                }
 
                 Scaffold(
                     topBar = {
@@ -84,7 +110,7 @@ class WidgetConfigActivity : ComponentActivity() {
                         LazyColumn {
                             items(accounts, key = { it.account.id }) { item ->
                                 AccountConfigItem(item = item) {
-                                    confirmWidgetConfig()
+                                    confirmWidgetConfig(item.account.id)
                                 }
                             }
                         }
@@ -133,12 +159,33 @@ class WidgetConfigActivity : ComponentActivity() {
         }
     }
 
-    private fun confirmWidgetConfig() {
+    private fun confirmWidgetConfig(accountId: String) {
         lifecycleScope.launch {
-            WidgetUpdateHelper.updateAllWidgets(applicationContext)
-            val resultValue = Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-            setResult(Activity.RESULT_OK, resultValue)
-            finish()
+            val glanceId = GlanceAppWidgetManager(applicationContext).getGlanceIdBy(appWidgetId)
+            updateAppWidgetState(applicationContext, glanceId) { prefs ->
+                prefs[WIDGET_ACCOUNT_ID] = accountId
+            }
+            finishWidgetConfiguration()
         }
+    }
+
+    private fun confirmDualWidgetConfig(firstId: String, secondId: String?, firstName: String, secondName: String) {
+        lifecycleScope.launch {
+            val glanceId = GlanceAppWidgetManager(applicationContext).getGlanceIdBy(appWidgetId)
+            updateAppWidgetState(applicationContext, glanceId) { prefs ->
+                prefs[WIDGET_ACCOUNT_ID] = firstId
+                if (secondId == null) prefs.remove(WIDGET_SECOND_ACCOUNT_ID) else prefs[WIDGET_SECOND_ACCOUNT_ID] = secondId
+                if (firstName.isBlank()) prefs.remove(WIDGET_FIRST_LABEL) else prefs[WIDGET_FIRST_LABEL] = firstName
+                if (secondName.isBlank()) prefs.remove(WIDGET_SECOND_LABEL) else prefs[WIDGET_SECOND_LABEL] = secondName
+            }
+            finishWidgetConfiguration()
+        }
+    }
+
+    private suspend fun finishWidgetConfiguration() {
+        WidgetUpdateHelper.updateAllWidgets(applicationContext)
+        WorkScheduler.requestImmediateRefresh(applicationContext)
+        setResult(Activity.RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId))
+        finish()
     }
 }

@@ -47,6 +47,7 @@ class OpenAiUsageApi(
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
         .build()
 ) : OpenAiUsageService {
     private val json = Json {

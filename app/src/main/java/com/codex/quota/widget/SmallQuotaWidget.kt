@@ -4,6 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.Composable
+import kotlin.math.roundToInt
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.datastore.preferences.core.Preferences
+import androidx.glance.currentState
+import kotlinx.coroutines.flow.flowOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,17 +55,22 @@ class SmallQuotaWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val app = context.applicationContext as? CodexQuotaApplication
         val accounts = app?.repository?.getAllAccounts().orEmpty()
-        val primaryAccount = accounts.firstOrNull()
+        val accountsFlow = app?.repository?.observeAccounts() ?: flowOf(emptyList())
+        val preferencesFlow = app?.preferencesRepository?.observePreferences()
+            ?: flowOf(com.codex.quota.domain.model.UserPreferences())
         val prefs = try {
             app?.preferencesRepository?.getPreferences()
         } catch (e: Exception) {
             null
         }
-        val themeMode = prefs?.widgetThemeMode ?: WidgetThemeMode.DARK_OBSIDIAN
 
         provideContent {
+            val liveAccounts by accountsFlow.collectAsState(initial = accounts)
+            val livePreferences by preferencesFlow.collectAsState(
+                initial = prefs ?: com.codex.quota.domain.model.UserPreferences()
+            )
             GlanceTheme {
-                SmallWidgetContent(context, primaryAccount, themeMode)
+                SmallWidgetContent(context, selectWidgetAccount(liveAccounts, currentState<Preferences>()[WIDGET_ACCOUNT_ID]), livePreferences.widgetThemeMode)
             }
         }
     }
@@ -85,7 +96,7 @@ class SmallQuotaWidget : GlanceAppWidget() {
                 .fillMaxSize()
                 .background(colors.background)
                 .cornerRadius(18.dp)
-                .padding(12.dp)
+                .padding(8.dp)
                 .clickable(actionStartActivity(intent)),
             contentAlignment = Alignment.Center
         ) {
@@ -105,15 +116,17 @@ class SmallQuotaWidget : GlanceAppWidget() {
                     )
                 }
             } else {
-                val primaryWindow = data.usage.primarySubscriberQuotaWindow()
-                val remainingPercent = primaryWindow?.remainingPercent?.toInt() ?: data.usage?.remainingPercent?.toInt()
+                val primaryWindow = data.usage.primarySubscriberQuotaWindow(data.account.planType)
+                val remainingPercent = primaryWindow?.remainingPercent?.roundToInt() ?: data.usage?.remainingPercent?.roundToInt()
                 val status = data.usage?.status ?: data.account.authStatus
                 val resetStr = primaryWindow?.resetAtEpochMs?.let { formatResetCountdown(it) }
                     ?: data.usage?.rateLimitInfo?.resetRequestsDuration
                     ?: data.usage?.rateLimitInfo?.resetTokensDuration
                     ?: "Active"
                 val subtitle = if (primaryWindow?.label == "Weekly") "weekly left" else "quota left"
-                val fiveHourLine = data.usage?.fiveHourRemainingPercent?.let { "5h ${formatQuotaPercent(it)}" }
+                val fiveHourLine = if (primaryWindow?.label == "Weekly") {
+                    data.usage?.fiveHourRemainingPercent?.let { "5h ${formatQuotaPercent(it)}" }
+                } else null
 
                 val dotColor = try {
                     Color(android.graphics.Color.parseColor(data.account.colorHex))
@@ -141,13 +154,15 @@ class SmallQuotaWidget : GlanceAppWidget() {
                         Text(
                             text = data.account.nickname,
                             maxLines = 1,
+                            modifier = GlanceModifier.defaultWeight(),
                             style = TextStyle(color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         )
+                        WidgetRefreshButton(colors, compact = true)
                     }
 
                     Spacer(modifier = GlanceModifier.height(4.dp))
 
-                    if (status == AuthStatus.AUTHENTICATION_REQUIRED) {
+                    if (status == AuthStatus.AUTHENTICATION_REQUIRED && remainingPercent == null) {
                         Text(
                             text = "Signed Out",
                             style = TextStyle(color = colors.error, fontWeight = FontWeight.Bold, fontSize = 13.sp)
@@ -166,6 +181,12 @@ class SmallQuotaWidget : GlanceAppWidget() {
                             style = TextStyle(color = colors.textSecondary, fontSize = 10.sp)
                         )
                     }
+
+                    Text(
+                        text = data.widgetSyncLabel(),
+                        maxLines = 1,
+                        style = TextStyle(color = colors.textMuted, fontSize = 9.sp)
+                    )
 
                     if (height > 90.dp) {
                         Spacer(modifier = GlanceModifier.height(4.dp))
