@@ -100,6 +100,8 @@ New-Item -ItemType Directory -Force -Path $env:ANDROID_USER_HOME, $env:TEMP | Ou
 
 Install the JDK and SDK at the selected paths first. Keep the generated debug keystore if you want subsequent APKs to update an existing installation. Never commit signing keys, account data, or tokens. Release signing uses external credentials as described in the Gradle configuration; the inherited release workflow requires repository signing secrets.
 
+GitHub Actions runs tests, lint, and a debug build on pushes to `main` and pull requests. CI APK attachment upload is optional: set the repository Actions variable `UPLOAD_CI_APK` to `true` to enable it when artifact storage is available. Test APK downloads are available from the release linked above.
+
 ## Validation
 
 The current test build passed:
